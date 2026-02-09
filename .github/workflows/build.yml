@@ -23,22 +23,13 @@ on:
         type: choice
         options:
           - "all"
-          - "6.10.0"
+          - "6.10.2"
           - "6.9.3"
           - "6.8.3"
           - "6.7.3"
           #6.6.3 non compila per una issue con libzstd_static 
           #- "6.6.3"
           #- "6.5.3"
-
-      cache_sources:
-        description: "Cache sources"
-        required: true
-        default: "no"
-        type: choice
-        options:
-          - "yes"
-          - "no"
 
       github_mirror:
         description: "Sources github mirror"
@@ -114,7 +105,7 @@ jobs:
           # Qt versions
           V_IN="${{ env.QT_VERSION_IN }}"
           if [ "$V_IN" = "all" ]; then
-            QT_LIST=('6.10.0' '6.9.3' '6.8.3' '6.7.3')
+            QT_LIST=('6.10.2' '6.9.3' '6.8.3' '6.7.3')
           else
             QT_LIST=("$V_IN")
           fi
@@ -133,59 +124,9 @@ jobs:
           echo $QT_REPO
 
 
-  get_sources:
-    needs: setup
-    strategy:
-      fail-fast: false
-      matrix:
-        qt: ${{ fromJSON(needs.setup.outputs.qt_versions) }}
-    concurrency:
-      group: src-${{ matrix.qt }}
-      cancel-in-progress: false
-
-    runs-on: ubuntu-latest
-    env:
-      CACHE_SOURCES: ${{(inputs.cache_sources) }}
-    steps:
-      - name: Check if sources from cache are availabe
-        id: cache-qt-check
-        uses: actions/cache/restore@v4
-        if: env.CACHE_SOURCES == 'yes'
-        with:
-          key: ${{matrix.qt}}_src
-          path: "~/qtsrc"
-          enableCrossOsArchive: true
-          lookup-only: true
-
-      - name: Clone Qt repo (version-specific) (retry if fail, sometimes git repo isn't working properly)
-        if: steps.cache-qt-check.outputs.cache-hit != 'true' && env.CACHE_SOURCES == 'yes'
-        uses: nick-fields/retry@v3
-        with:
-          max_attempts: 50
-          timeout_minutes: 120
-          shell: bash
-          command: |
-            cd ~
-            if [ -d "qtsrc" ]; then
-              echo "qtsrc exists, removing"
-              rm -r qtsrc
-            fi
-            mkdir qtsrc
-            cd qtsrc
-            git clone ${{needs.setup.outputs.qt_sources_repo}} . -b '${{matrix.qt}}'
-            perl init-repository
-
-      - name: Save Qt Sources to cache if new (version-specific)
-        id: cache-qt-save
-        if: success() &&  steps.cache-qt-check.outputs.cache-hit != 'true' && env.CACHE_SOURCES == 'yes'
-        uses: actions/cache/save@v4
-        with:
-          key: ${{ steps.cache-qt-check.outputs.cache-primary-key }}
-          path: "~/qtsrc"
-          enableCrossOsArchive: true
 
   build:
-    needs: [setup, get_sources]
+    needs: [setup]
     concurrency:
       group: build-${{matrix.qt}}-${{matrix.target.os}}-${{matrix.target.toolchain}}
       cancel-in-progress: false
@@ -205,14 +146,13 @@ jobs:
       MSVC_X64_FLAGS: '-openssl-linked'
       MSVC_ARM64_FLAGS: ''
       MINGW_FLAGS: ''
-      MSVC_CMAKE: '-G "Ninja" -DCMAKE_TOOLCHAIN_FILE="C:/vcpkg/scripts/buildsystems/vcpkg.cmake" -DOPENSSL_USE_STATIC_LIBS=ON'
-      MSVC_X64_CMAKE: ''
-      MSVC_ARM_CMAKE: '-DCMAKE_SYSTEM_PROCESSOR=ARM64 -DCMAKE_CXX_FLAGS="/await:strict"'
-      MINGW_CMAKE: '-G "Ninja" -DOPENSSL_USE_STATIC_LIBS=ON'
+      MSVC_CMAKE: '-DCMAKE_CXX_FLAGS="/await:strict" -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded -DCMAKE_TOOLCHAIN_FILE="C:/vcpkg/scripts/buildsystems/vcpkg.cmake"'
+      MSVC_X64_CMAKE: '-DFEATURE_openssl_linked=ON'
+      MSVC_ARM_CMAKE: '-DCMAKE_SYSTEM_PROCESSOR=ARM64 -DOPENSSL_USE_STATIC_LIBS=ON'
+      MINGW_CMAKE: '-DOPENSSL_USE_STATIC_LIBS=ON'
       LINUX_CMAKE: '-DCMAKE_PREFIX_PATH=/usr/lib/llvm-18 -DOPENSSL_USE_STATIC_LIBS=ON -DFEATURE_openssl_linked=ON'
       MACOS_CMAKE: '-DCMAKE_OSX_ARCHITECTURES="x86_64;arm64"'
       MACOS_FLAGS: '-qt-harfbuzz -qt-freetype'
-      CACHE_SOURCES: ${{(inputs.cache_sources) }}
       SKIP_CACHED_BUILDS: ${{inputs.skip_cached_builds == 'yes'}}
 
     runs-on: ${{ matrix.target.os }}
@@ -291,11 +231,17 @@ jobs:
           name: VCPKG_ROOT
           value: C:\vcpkg
 
-      #OpenSSL for MSVC
-      - name: Install OpenSSL (Windows MSVC)
-        if: contains(matrix.target.os, 'windows') && matrix.target.toolchain == 'msvc' 
+      #OpenSSL for MSVC ARM
+      - name: Install OpenSSL (Windows MSVC ARM)
+        if: contains(matrix.target.os, 'windows') && matrix.target.toolchain == 'msvc' && contains(runner.arch,'ARM64')
         run: |
           vcpkg install openssl:${{runner.arch}}-${{runner.os}}-static-release --vcpkg-root=$env:VCPKG_ROOT
+
+      #OpenSSL for MSVC X86
+      - name: Install OpenSSL (Windows MSVC X86)
+        if: contains(matrix.target.os, 'windows') && matrix.target.toolchain == 'msvc' && !contains(runner.arch,'ARM64')
+        run: |
+          vcpkg install openssl:${{runner.arch}}-${{runner.os}}-release --vcpkg-root=$env:VCPKG_ROOT
 
 
       # Mirror DIA SDK from Enterprise to expected Community path
@@ -363,27 +309,7 @@ jobs:
           swap-storage: true
 
       # ---------- SOURCES ----------
-      - name: Restore sources from cache (version-specific)
-        id: cache-qt-restore
-        uses: actions/cache/restore@v4
-        if: env.CACHE_SOURCES == 'yes'
-        with:
-          key: ${{matrix.qt}}_src
-          path: "~/qtsrc"
-          enableCrossOsArchive: true
-
-      #- name: Clone Qt repo (version-specific) if not found or cache disabled
-      #  if: steps.cache-qt-restore.outputs.cache-hit != 'true' || env.CACHE_SOURCES != 'yes'
-      #  shell: bash
-      #  run: |
-      #    cd ${{env.HOME_DIR_BASH}}
-      #    mkdir qtsrc
-      #    cd qtsrc
-      #    git clone ${{needs.setup.outputs.qt_sources_repo}} . -b '${{matrix.qt}}'
-      #    perl init-repository
-
       - name: Clone Qt repo (version-specific) if not found or cache disabled (retry if fail, sometimes git repo isn't working properly)
-        if: steps.cache-qt-restore.outputs.cache-hit != 'true' || env.CACHE_SOURCES != 'yes'
         uses: nick-fields/retry@v3
         with:
           max_attempts: 50
