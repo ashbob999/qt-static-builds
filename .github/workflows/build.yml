@@ -23,6 +23,7 @@ on:
         type: choice
         options:
           - "all"
+          - "6.11.0"
           - "6.10.2"
           - "6.9.3"
           - "6.8.3"
@@ -105,7 +106,7 @@ jobs:
           # Qt versions
           V_IN="${{ env.QT_VERSION_IN }}"
           if [ "$V_IN" = "all" ]; then
-            QT_LIST=('6.10.2' '6.9.3' '6.8.3' '6.7.3')
+            QT_LIST=('6.11.0' '6.10.2' '6.9.3' '6.8.3' '6.7.3')
           else
             QT_LIST=("$V_IN")
           fi
